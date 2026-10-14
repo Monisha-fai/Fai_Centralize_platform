@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FAI Platforms</title>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet">
+<!-- Microsoft sign-in (MSAL.js) for Entra SSO + Graph Mail.Send -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
 <style>
 :root{--ink:#14213d;--paper:#eef1f6;--card:#fff;--teal:#0f8b8d;--amber:#e9a23b;--line:#d5dbe6;--muted:#5b6780;--red:#c0392b;
 --head:#14213d;--on-accent:#fff;--field:#fbfcfe;--tag-bg:#fdf1d9;--tag-fg:#14213d;--open-bg:#14213d;--open-fg:#fff;--overlay:#14213d99;--shadow:#14213d22}
@@ -203,6 +205,13 @@ body.dash #dashView:not(.hidden){height:100%;grid-template-rows:minmax(0,1fr);al
 .owner strong{color:var(--ink);font-weight:700}
 .mailbtn{border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:9px;display:grid;place-items:center;cursor:pointer;transition:border-color .2s,color .2s}
 .mailbtn:hover{border-color:var(--teal);color:var(--teal)}
+/* Microsoft sign-in */
+.msbtn{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:11px 18px;font-weight:600;margin-top:4px}
+.msbtn:hover{border-color:var(--teal)}
+.msbtn:disabled{opacity:.6;cursor:wait}
+.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin:18px 0 2px}
+.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
+.sendnote{font-size:12px;color:var(--muted);margin-top:8px}
 
 </style>
 </head>
@@ -223,6 +232,11 @@ body.dash #dashView:not(.hidden){height:100%;grid-template-rows:minmax(0,1fr);al
   <section id="loginView" class="panel">
     <h2>Sign in</h2>
     <p>One common login opens every platform.</p>
+    <button class="msbtn" id="msBtn" type="button" onclick="msLogin()">
+      <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+      Sign in with Microsoft
+    </button>
+    <div class="or">or use the common login</div>
     <label for="u">Username</label><input id="u" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
     <div class="err" id="loginErr"></div>
@@ -300,8 +314,9 @@ body.dash #dashView:not(.hidden){height:100%;grid-template-rows:minmax(0,1fr);al
     <label for="mSub">Subject</label><input id="mSub">
     <label for="mBody">Message</label><textarea id="mBody" rows="6"></textarea>
     <div class="err" id="mmErr"></div>
-    <button class="btn" onclick="sendMail()">Send mail</button>
+    <button class="btn" id="sendBtn" onclick="sendMail()">Send mail</button>
     <button class="btn alt" onclick="closeModals()">Cancel</button>
+    <p class="sendnote" id="sendNote"></p>
   </div>
 </div>
 
@@ -310,6 +325,16 @@ body.dash #dashView:not(.hidden){height:100%;grid-template-rows:minmax(0,1fr);al
 /* ====== EDIT HERE: the one common login ======
    Used to sign in here AND shown in every platform's "Login" dropdown. */
 const COMMON_LOGIN = {username:"fai", password:"fai123"}; /* temporary - change later */
+
+/* ====== EDIT HERE: Microsoft Entra app registration ======
+   Entra admin center > App registrations > your app > Overview.
+   Platform must be "Single-page application" with your Amplify domain as redirect URI.
+   API permissions (Delegated, Microsoft Graph): User.Read, Mail.Send */
+const MS_CONFIG = {
+  clientId: "",   /* Application (client) ID */
+  tenantId: ""    /* Directory (tenant) ID */
+};
+const MS_SCOPES = ["User.Read", "Mail.Send"];
 const PLATFORMS = [
   {
     "name": "Agri cart",
@@ -645,7 +670,74 @@ function showView(id){
 function doLogin(){
   const u=$("u").value.trim(), p=$("p").value;
   if(u.toLowerCase()!==COMMON_LOGIN.username.toLowerCase()||p!==COMMON_LOGIN.password){$("loginErr").textContent="Wrong username or password.";return}
-  sessionStorage.setItem("fai_user",u); enter();
+  sessionStorage.setItem("fai_user",u); sessionStorage.removeItem("fai_ms"); enter();
+}
+
+/* ---------- Microsoft sign-in (MSAL.js, no server needed) ---------- */
+let msalApp=null, msalReady=null;
+function msConfigured(){return Boolean(MS_CONFIG.clientId && MS_CONFIG.tenantId && window.msal)}
+function initMsal(){
+  if(msalReady) return msalReady;
+  if(!msConfigured()) return (msalReady=Promise.resolve(null));
+  msalApp=new msal.PublicClientApplication({
+    auth:{clientId:MS_CONFIG.clientId, authority:"https://login.microsoftonline.com/"+MS_CONFIG.tenantId, redirectUri:location.origin+location.pathname},
+    cache:{cacheLocation:"sessionStorage"}
+  });
+  msalReady=(msalApp.initialize?msalApp.initialize():Promise.resolve())
+    .then(()=>msalApp.handleRedirectPromise())
+    .then(r=>{
+      const acc=(r&&r.account)||msalApp.getAllAccounts()[0];
+      if(acc) msalApp.setActiveAccount(acc);
+      return msalApp;
+    })
+    .catch(err=>{console.error("MSAL init failed",err);return null});
+  return msalReady;
+}
+function msAccount(){return msalApp?msalApp.getActiveAccount():null}
+function enterMs(acc){
+  sessionStorage.setItem("fai_user",acc.name||acc.username);
+  sessionStorage.setItem("fai_ms",acc.username);
+  enter();
+}
+async function msLogin(){
+  $("loginErr").textContent="";
+  if(!msConfigured()){$("loginErr").textContent="Microsoft sign-in is not set up yet. Add the client ID and tenant ID in MS_CONFIG.";return}
+  const btn=$("msBtn"); btn.disabled=true;
+  try{
+    await initMsal();
+    const r=await msalApp.loginPopup({scopes:MS_SCOPES, prompt:"select_account"});
+    msalApp.setActiveAccount(r.account);
+    enterMs(r.account);
+  }catch(err){
+    if(err && err.errorCode!=="user_cancelled") $("loginErr").textContent="Microsoft sign-in failed: "+(err.errorMessage||err.message||err);
+  }finally{btn.disabled=false}
+}
+async function getGraphToken(){
+  await initMsal();
+  const account=msAccount();
+  if(!account) throw new Error("Not signed in with Microsoft.");
+  try{
+    return (await msalApp.acquireTokenSilent({scopes:MS_SCOPES, account})).accessToken;
+  }catch(err){
+    if(err instanceof msal.InteractionRequiredAuthError) return (await msalApp.acquireTokenPopup({scopes:MS_SCOPES, account})).accessToken;
+    throw err;
+  }
+}
+async function graphSendMail(to, subject, text){
+  const token=await getGraphToken();
+  const res=await fetch("https://graph.microsoft.com/v1.0/me/sendMail",{
+    method:"POST",
+    headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},
+    body:JSON.stringify({
+      message:{subject, body:{contentType:"Text", content:text}, toRecipients:[{emailAddress:{address:to}}]},
+      saveToSentItems:true
+    })
+  });
+  if(res.status===202) return;
+  let msg="HTTP "+res.status;
+  try{const j=await res.json(); if(j.error&&j.error.message) msg=j.error.message}catch(e){}
+  if(res.status===403) msg="Mail.Send permission is not granted for this app. Ask your admin to grant consent. ("+msg+")";
+  throw new Error(msg);
 }
 function enter(){
   $("who").classList.remove("hidden"); $("whoText").textContent=sessionStorage.getItem("fai_user");
@@ -663,6 +755,8 @@ function toTop(){$("listPane").scrollTo({top:0,behavior:"smooth"})}
 $("listPane").addEventListener("scroll",e=>$("toTop").classList.toggle("show",e.target.scrollTop>240));
 $("hLogo").src=document.querySelector(".hero .logo").src;
 function logout(){
+  const acc=msAccount();
+  if(acc&&msalApp){ msalApp.setActiveAccount(null); msalApp.logoutPopup({account:acc}).catch(()=>{}); }
   sessionStorage.clear(); $("who").classList.add("hidden"); $("u").value=""; $("p").value=""; $("loginErr").textContent=""; showView("loginView");
 }
 const LINK_TYPES = [
@@ -841,7 +935,12 @@ function openMail(i,mode){
   mailFor=i; mailMode=mode; const p=PLATFORMS[i];
   $("mmTitle").textContent=(mode==="voice"?"Voice mail":"Mail")+" – "+p.name;
   const user = sessionStorage.getItem("fai_user") || "employee";
-  $("mFrom").value = user.includes("@") ? user : user + "@farmwiseai.com";
+  const msUser = sessionStorage.getItem("fai_ms");
+  $("mFrom").value = msUser || (user.includes("@") ? user : user + "@farmwiseai.com");
+  $("mFrom").readOnly = Boolean(msUser);
+  $("sendNote").textContent = msUser
+    ? "Sends directly from your Microsoft 365 mailbox. A copy is saved in your Sent Items."
+    : "Opens your mail app. Sign in with Microsoft to send directly from here.";
   $("mTo").value = p.email || (p.owner.toLowerCase().replace(/[^a-z0-9]/g, "") + "@farmwiseai.com");
   $("mSub").value="Message about "+p.name; $("mBody").value=""; $("mmErr").textContent="";
   $("micRow").classList.toggle("hidden",mode!=="voice");
@@ -861,16 +960,37 @@ function toggleMic(){
   rec.onend=()=>{recording=false;$("micBtn").classList.remove("rec");$("micStatus").textContent="Stopped. Edit the text if needed, then send."};
   rec.start(); recording=true; $("micBtn").classList.add("rec"); $("micStatus").textContent="Listening… tap again to stop.";
 }
-function sendMail(){
+async function sendMail(){
   const body=$("mBody").value.trim();
   const from=$("mFrom").value.trim();
   const to=$("mTo").value.trim();
   if(!body){$("mmErr").textContent="Write or record a message first.";return}
   if(!from){$("mmErr").textContent="Please enter your email address in the From field.";return}
   const p=PLATFORMS[mailFor];
+  if(sessionStorage.getItem("fai_ms")){
+    const btn=$("sendBtn"); btn.disabled=true; btn.textContent="Sending…"; $("mmErr").textContent="";
+    try{
+      if(recording&&rec)rec.stop();
+      await graphSendMail(to, $("mSub").value, body + "\n\n---\nSent via FAI Platforms by " + from);
+      toast("Mail sent to " + p.owner);
+      closeModals();
+    }catch(err){
+      $("mmErr").textContent="Could not send: "+(err.message||err);
+    }finally{btn.disabled=false; btn.textContent="Send mail"}
+    return;
+  }
   location.href="mailto:"+encodeURIComponent(to)+"?cc="+encodeURIComponent(from)+"&subject="+encodeURIComponent($("mSub").value)+"&body="+encodeURIComponent(body + "\n\n---\nSent by: " + from);
   toast("Email ready for " + p.owner);
   closeModals();
+}
+let toastTimer=null;
+function toast(msg){
+  const t=$("toast"); t.textContent=msg; t.classList.remove("hidden");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.add("hidden"),2400);
+}
+function copyText(text, done){
+  const fallback=()=>{const a=document.createElement("textarea");a.value=text;document.body.appendChild(a);a.select();try{document.execCommand("copy")}catch(e){}a.remove();done&&done()};
+  if(navigator.clipboard&&window.isSecureContext) navigator.clipboard.writeText(text).then(()=>done&&done(),fallback); else fallback();
 }
 function closeModals(){
   if(recording&&rec)rec.stop();
@@ -885,6 +1005,7 @@ document.querySelectorAll(".rv").forEach(el=>io.observe(el));
 let saved=null; try{saved=localStorage.getItem("fai_theme")}catch(e){}
 setTheme(saved||"light");
 showView("loginView");
+initMsal().then(()=>{const acc=msAccount(); if(acc && sessionStorage.getItem("fai_ms")) enterMs(acc);});
 </script>
 </body>
 </html>
